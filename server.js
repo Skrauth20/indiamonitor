@@ -99,7 +99,7 @@ async function fetchAllNews() {
 }
 
 // ══════════════════════════════════════
-// 2. MARKETS — Yahoo Finance (free)
+// 2. MARKETS — Multiple sources with fallback
 // ══════════════════════════════════════
 async function fetchMarkets() {
   console.log('[MKT] Fetching...');
@@ -116,35 +116,127 @@ async function fetchMarkets() {
     { s: 'ETH-INR', n: 'ETH/INR', t: 'crypto' },
     { s: '^INDIAVIX', n: 'INDIA VIX', t: 'index' },
   ];
+
+  let quotes = [];
+
+  // Method 1: Yahoo Finance v8 with browser-like headers
   try {
     const str = syms.map(s => s.s).join(',');
-    const r = await safeFetch(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(str)}`, {
-      headers: { 'User-Agent': 'IndiaMonitor/1.0' }, timeout: 10000
+    const r = await safeFetch(`https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(str)}&crumb=`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Origin': 'https://finance.yahoo.com',
+        'Referer': 'https://finance.yahoo.com/',
+      }, timeout: 10000
     });
     const d = await r.json();
-    const quotes = (d?.quoteResponse?.result || []).map(q => {
+    quotes = (d?.quoteResponse?.result || []).map(q => {
       const sym = syms.find(s => s.s === q.symbol);
       if (!sym) return null;
       return {
         name: sym.n, symbol: q.symbol, type: sym.t,
-        price: q.regularMarketPrice || 0,
-        change: q.regularMarketChange || 0,
+        price: q.regularMarketPrice || 0, change: q.regularMarketChange || 0,
         changePct: q.regularMarketChangePercent || 0,
-        high: q.regularMarketDayHigh || 0,
-        low: q.regularMarketDayLow || 0,
+        high: q.regularMarketDayHigh || 0, low: q.regularMarketDayLow || 0,
         prevClose: q.regularMarketPreviousClose || 0,
-        marketState: q.marketState || 'UNKNOWN',
-        currency: q.currency || 'INR',
+        marketState: q.marketState || 'UNKNOWN', currency: q.currency || 'INR',
         updatedAt: new Date().toISOString(),
       };
     }).filter(Boolean);
+    if (quotes.length > 0) console.log(`[MKT] Yahoo v7 OK: ${quotes.length} symbols`);
+  } catch (e) { console.error(`[MKT] Yahoo v7 failed: ${e.message}`); }
+
+  // Method 2: Yahoo Finance individual quote pages (if batch fails)
+  if (quotes.length === 0) {
+    console.log('[MKT] Trying individual Yahoo quotes...');
+    for (const sym of syms) {
+      try {
+        const r = await safeFetch(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(sym.s)}?modules=price`, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          }, timeout: 8000
+        });
+        const d = await r.json();
+        const p = d?.quoteSummary?.result?.[0]?.price;
+        if (p) {
+          quotes.push({
+            name: sym.n, symbol: sym.s, type: sym.t,
+            price: p.regularMarketPrice?.raw || 0,
+            change: p.regularMarketChange?.raw || 0,
+            changePct: p.regularMarketChangePercent?.raw ? p.regularMarketChangePercent.raw * 100 : 0,
+            high: p.regularMarketDayHigh?.raw || 0, low: p.regularMarketDayLow?.raw || 0,
+            prevClose: p.regularMarketPreviousClose?.raw || 0,
+            marketState: p.marketState || 'UNKNOWN', currency: p.currency || 'INR',
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      } catch (e) { /* skip symbol */ }
+    }
+    if (quotes.length > 0) console.log(`[MKT] Yahoo individual OK: ${quotes.length} symbols`);
+  }
+
+  // Method 3: Google Finance scraping as fallback
+  if (quotes.length === 0) {
+    console.log('[MKT] Trying Google Finance...');
+    const gSyms = [
+      { g: 'NIFTY_50:INDEXNSE', n: 'NIFTY 50', t: 'index', cur: 'INR' },
+      { g: 'SENSEX:INDEXBOM', n: 'SENSEX', t: 'index', cur: 'INR' },
+      { g: 'USDINR:CUR', n: 'USD/INR', t: 'forex', cur: 'INR' },
+      { g: 'BTC-INR:CUR', n: 'BTC/INR', t: 'crypto', cur: 'INR' },
+    ];
+    for (const gs of gSyms) {
+      try {
+        const r = await safeFetch(`https://www.google.com/finance/quote/${gs.g}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }, timeout: 8000
+        });
+        const html = await r.text();
+        const priceMatch = html.match(/data-last-price="([^"]+)"/);
+        const changeMatch = html.match(/data-last-normal-market-change="([^"]+)"/);
+        const pctMatch = html.match(/data-last-normal-market-change-percent="([^"]+)"/);
+        if (priceMatch) {
+          quotes.push({
+            name: gs.n, symbol: gs.g, type: gs.t,
+            price: parseFloat(priceMatch[1]) || 0,
+            change: parseFloat(changeMatch?.[1]) || 0,
+            changePct: parseFloat(pctMatch?.[1]) || 0,
+            currency: gs.cur, updatedAt: new Date().toISOString(),
+          });
+        }
+      } catch (e) { /* skip */ }
+    }
+    if (quotes.length > 0) console.log(`[MKT] Google Finance OK: ${quotes.length} symbols`);
+  }
+
+  // Method 4: Free exchange rate API for forex at minimum
+  if (quotes.length === 0) {
+    console.log('[MKT] Trying exchange rate API...');
+    try {
+      const r = await safeFetch('https://open.er-api.com/v6/latest/USD', { timeout: 8000 });
+      const d = await r.json();
+      if (d.rates?.INR) {
+        quotes.push({ name: 'USD/INR', symbol: 'USDINR', type: 'forex', price: d.rates.INR, change: 0, changePct: 0, currency: 'INR', updatedAt: new Date().toISOString() });
+        quotes.push({ name: 'EUR/INR', symbol: 'EURINR', type: 'forex', price: d.rates.INR / d.rates.EUR, change: 0, changePct: 0, currency: 'INR', updatedAt: new Date().toISOString() });
+      }
+    } catch (e) { console.error(`[MKT] Exchange rate failed: ${e.message}`); }
+    // Crypto from CoinGecko (free, no key)
+    try {
+      const r = await safeFetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=inr&include_24hr_change=true', { timeout: 8000 });
+      const d = await r.json();
+      if (d.bitcoin) quotes.push({ name: 'BTC/INR', symbol: 'BTC-INR', type: 'crypto', price: d.bitcoin.inr, change: 0, changePct: d.bitcoin.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
+      if (d.ethereum) quotes.push({ name: 'ETH/INR', symbol: 'ETH-INR', type: 'crypto', price: d.ethereum.inr, change: 0, changePct: d.ethereum.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
+    } catch (e) { /* skip */ }
+    if (quotes.length > 0) console.log(`[MKT] Fallback APIs OK: ${quotes.length} symbols`);
+  }
+
+  if (quotes.length > 0) {
     cache.set('markets', quotes);
     console.log(`[MKT] ${quotes.length} symbols cached`);
-    return quotes;
-  } catch (e) {
-    console.error(`[MKT] ${e.message}`);
-    return cache.get('markets') || [];
+  } else {
+    console.error('[MKT] All sources failed');
   }
+  return cache.get('markets') || [];
 }
 
 // ══════════════════════════════════════
