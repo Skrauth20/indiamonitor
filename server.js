@@ -496,6 +496,239 @@ async function fetchAllSports() {
 }
 
 // ══════════════════════════════════════
+// 9. REGIONAL NEWS — Hindi / Marathi / Bangla (Phase 2)
+// ══════════════════════════════════════
+const REGIONAL_FEEDS = {
+  hindi: [
+    { name: 'दैनिक भास्कर', url: 'https://www.bhaskar.com/rss-feed/1061' },
+    { name: 'अमर उजाला', url: 'https://www.amarujala.com/rss/breaking-news.xml' },
+    { name: 'NDTV हिन्दी', url: 'https://feeds.feedburner.com/ndtvkhabar' },
+    { name: 'BBC हिन्दी', url: 'https://feeds.bbci.co.uk/hindi/rss.xml' },
+    { name: 'नवभारत टाइम्स', url: 'https://navbharattimes.indiatimes.com/rssfeedsdefault.cms' },
+    { name: 'जनसत्ता', url: 'https://www.jansatta.com/feed/' },
+  ],
+  marathi: [
+    { name: 'लोकसत्ता', url: 'https://www.loksatta.com/feed/' },
+    { name: 'Maharashtra Times', url: 'https://maharashtratimes.com/rssfeedsdefault.cms' },
+    { name: 'Sakal', url: 'https://www.esakal.com/feeds/rss/all' },
+    { name: 'ABP माझा', url: 'https://marathi.abplive.com/rss' },
+    { name: 'TV9 मराठी', url: 'https://www.tv9marathi.com/feed' },
+  ],
+  bangla: [
+    { name: 'আনন্দবাজার', url: 'https://www.anandabazar.com/rss/all-stories' },
+    { name: 'Zee 24 Ghanta', url: 'https://zeenews.india.com/bengali/rss' },
+    { name: 'ABP আনন্দ', url: 'https://bengali.abplive.com/rss' },
+    { name: 'Sangbad Pratidin', url: 'https://www.sangbadpratidin.in/feed/' },
+    { name: 'Bartaman', url: 'https://bartamanpatrika.com/feed' },
+    { name: 'Ei Samay', url: 'https://eisamay.com/rssfeedsdefault.cms' },
+  ],
+};
+
+function regionalSeverity(title) {
+  const t = title.toLowerCase();
+  // Hindi/Marathi/Bangla + English critical keywords
+  if (['हमला','আক্রমণ','हल्ला','attack','terror','killed','blast','bomb','मौत','মৃত্যু','মৃত','विस्फोट','বিস্ফোরণ','war','युद्ध','যুদ্ধ'].some(k => t.includes(k))) return 'critical';
+  if (['गिरफ্তার','গ্রেপ্তার','अटक','earthquake','भूकंप','ভূমিকম্প','flood','बाढ','বন্যা','riot','दंगा','দাঙ্গা','clash','tension','crisis','সংকট','संकट'].some(k => t.includes(k))) return 'high';
+  if (['election','चुनाव','নির্বাচন','निवडणूक','budget','बजट','বাজেট','अर्थसंकल্प','court','अदालत','আদালত','न्यायालय','parliament','संसद','সংসদ'].some(k => t.includes(k))) return 'medium';
+  return 'low';
+}
+
+async function fetchRegionalNews(lang) {
+  const feeds = REGIONAL_FEEDS[lang];
+  if (!feeds) return [];
+  console.log(`[NEWS-${lang.toUpperCase()}] Fetching...`);
+  
+  const RSSParser = require('rss-parser');
+  const parser = new RSSParser({ timeout: 10000, headers: { 'User-Agent': 'IndiaMonitor/1.0' } });
+  
+  let items = [];
+  const results = await Promise.allSettled(feeds.map(async feed => {
+    try {
+      const parsed = await parser.parseURL(feed.url);
+      return (parsed.items || []).slice(0, 8).map(i => ({
+        source: feed.name,
+        title: (i.title || '').trim(),
+        link: i.link || '',
+        pubDate: i.pubDate || i.isoDate || new Date().toISOString(),
+        excerpt: (i.contentSnippet || i.content || '').replace(/<[^>]*>/g, '').trim().slice(0, 200),
+      }));
+    } catch (e) {
+      console.error(`[NEWS-${lang.toUpperCase()}] ${feed.name}: ${e.message}`);
+      return [];
+    }
+  }));
+  
+  results.forEach(r => { if (r.status === 'fulfilled') items.push(...r.value); });
+  items.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+  
+  // Deduplicate
+  const seen = new Set();
+  const deduped = items.filter(i => {
+    const k = i.title.toLowerCase().slice(0, 50);
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  }).map(i => ({ ...i, severity: regionalSeverity(i.title), timeAgo: timeAgo(i.pubDate) }));
+  
+  const result = deduped.slice(0, 30);
+  cache.set(`news_${lang}`, result);
+  console.log(`[NEWS-${lang.toUpperCase()}] ${result.length} items cached`);
+  return result;
+}
+
+// ══════════════════════════════════════
+// 10. CYBER SECURITY — NVD + Service Health (Phase 2)
+// ══════════════════════════════════════
+async function fetchCyber() {
+  console.log('[CYBER] Fetching...');
+  const data = { advisories: [], services: [], lastUpdated: new Date().toISOString() };
+  
+  // NVD recent CVEs
+  try {
+    const r = await safeFetch('https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=8', {
+      headers: { 'User-Agent': 'IndiaMonitor/1.0' }, timeout: 15000
+    });
+    const d = await r.json();
+    data.advisories = (d.vulnerabilities || []).map(v => {
+      const cve = v.cve || {};
+      const desc = (cve.descriptions || []).find(d => d.lang === 'en');
+      let cvss = 0;
+      for (const key of ['cvssMetricV31','cvssMetricV30','cvssMetricV2']) {
+        if (cve.metrics?.[key]?.[0]) { cvss = cve.metrics[key][0].cvssData?.baseScore || 0; break; }
+      }
+      const sev = cvss >= 9 ? 'critical' : cvss >= 7 ? 'high' : cvss >= 4 ? 'medium' : 'low';
+      return {
+        title: `${cve.id || 'CVE'} — CVSS ${cvss}`,
+        link: `https://nvd.nist.gov/vuln/detail/${cve.id}`,
+        description: (desc?.value || '').slice(0, 200),
+        date: cve.published || '',
+        severity: sev,
+        source: 'NVD',
+        type: 'cve',
+        cvss,
+      };
+    });
+  } catch (e) { console.error(`[CYBER] NVD: ${e.message}`); }
+  
+  // Digital service health checks
+  const checks = [
+    { name: 'UPI / NPCI', url: 'https://www.npci.org.in', icon: '💳' },
+    { name: 'IRCTC', url: 'https://www.irctc.co.in', icon: '🚂' },
+    { name: 'DigiLocker', url: 'https://www.digilocker.gov.in', icon: '📄' },
+    { name: 'Aadhaar / UIDAI', url: 'https://uidai.gov.in', icon: '🆔' },
+    { name: 'Income Tax', url: 'https://www.incometax.gov.in', icon: '🏛️' },
+    { name: 'NIC / gov.in', url: 'https://www.india.gov.in', icon: '🌐' },
+  ];
+  
+  for (const chk of checks) {
+    try {
+      const start = Date.now();
+      const r = await safeFetch(chk.url, { timeout: 8000 });
+      const latency = Date.now() - start;
+      data.services.push({ name: chk.name, icon: chk.icon, status: r.ok ? 'operational' : 'degraded', latency, statusCode: r.ok ? 200 : 0 });
+    } catch (e) {
+      const isTimeout = e.name === 'AbortError';
+      data.services.push({ name: chk.name, icon: chk.icon, status: isTimeout ? 'slow' : 'down', latency: isTimeout ? 8000 : 0, statusCode: 0 });
+    }
+  }
+  
+  cache.set('cyber', data);
+  console.log(`[CYBER] ${data.advisories.length} advisories, ${data.services.length} services`);
+  return data;
+}
+
+// ══════════════════════════════════════
+// 11. DEFENCE — RSS Aggregator (Phase 2)
+// ══════════════════════════════════════
+const DEFENCE_FEEDS = [
+  { name: 'LiveFist', url: 'https://www.livefistdefence.com/feed/' },
+  { name: 'DefenseNews', url: 'https://www.defensenews.com/arc/outboundfeeds/rss/category/global/asia-pacific/?outputType=xml' },
+  { name: 'PIB/MoD', url: 'https://pib.gov.in/RssMain.aspx?ModId=3&Lang=1&Regid=3' },
+  { name: 'Indian Defence', url: 'https://www.indiandefensenews.in/feeds/posts/default?alt=rss' },
+];
+
+const DEF_KW = {
+  iaf: ['rafale','tejas','sukhoi','su-30','mig','iaf','air force','c-130','chinook','apache'],
+  navy: ['ins ','vikrant','navy','naval','submarine','frigate','destroyer','carrier'],
+  army: ['army','regiment','brigade','loc','bsf','border','artillery','tank','infantry'],
+  missile: ['brahmos','agni','prithvi','akash','missile','drdo','s-400','barak'],
+  exercise: ['exercise','drill','joint','bilateral','malabar','tarang','garuda'],
+  procurement: ['procurement','contract','deal','acquisition','induction','delivery'],
+  space: ['isro','satellite','asat','space','gslv','pslv','chandrayaan'],
+};
+
+function defCategory(text) {
+  const t = text.toLowerCase();
+  for (const [cat, kws] of Object.entries(DEF_KW)) { if (kws.some(k => t.includes(k))) return cat; }
+  return 'general';
+}
+
+function defSeverity(text) {
+  const t = text.toLowerCase();
+  if (['war','attack','strike','killed','ceasefire violation','infiltration','nuclear'].some(k => t.includes(k))) return 'critical';
+  if (['tension','standoff','deployment','test fire','launch','border clash'].some(k => t.includes(k))) return 'high';
+  if (['exercise','drill','procurement','induction','delivery','meeting'].some(k => t.includes(k))) return 'medium';
+  return 'low';
+}
+
+async function fetchDefence() {
+  console.log('[DEFENCE] Fetching...');
+  const RSSParser = require('rss-parser');
+  const parser = new RSSParser({ timeout: 12000, headers: { 'User-Agent': 'IndiaMonitor/1.0' } });
+  
+  let articles = [];
+  const results = await Promise.allSettled(DEFENCE_FEEDS.map(async feed => {
+    try {
+      const parsed = await parser.parseURL(feed.url);
+      return (parsed.items || []).slice(0, 10).map(i => {
+        const title = (i.title || '').trim();
+        const desc = (i.contentSnippet || i.content || '').replace(/<[^>]*>/g, '').trim().slice(0, 200);
+        return {
+          title, link: i.link || '', description: desc,
+          source: feed.name, date: i.pubDate || i.isoDate || '',
+          category: defCategory(title + ' ' + desc),
+          severity: defSeverity(title + ' ' + desc),
+          timeAgo: timeAgo(i.pubDate || i.isoDate || new Date().toISOString()),
+        };
+      });
+    } catch (e) { console.error(`[DEFENCE] ${feed.name}: ${e.message}`); return []; }
+  }));
+  
+  results.forEach(r => { if (r.status === 'fulfilled') articles.push(...r.value); });
+  
+  // Deduplicate
+  const seen = new Set();
+  articles = articles.filter(a => { const k = a.title.toLowerCase().slice(0, 50); if (seen.has(k)) return false; seen.add(k); return true; });
+  articles.sort((a, b) => new Date(b.date) - new Date(a.date));
+  
+  // Build readiness
+  const cats = {};
+  articles.forEach(a => {
+    if (!cats[a.category]) cats[a.category] = { count: 0, critical: 0, high: 0 };
+    cats[a.category].count++;
+    if (a.severity === 'critical') cats[a.category].critical++;
+    if (a.severity === 'high') cats[a.category].high++;
+  });
+  
+  const readiness = [
+    { name: 'IAF', icon: '🛩️', key: 'iaf' },
+    { name: 'Navy', icon: '🚢', key: 'navy' },
+    { name: 'Army', icon: '⚔️', key: 'army' },
+    { name: 'Missiles/DRDO', icon: '🎯', key: 'missile' },
+    { name: 'Exercises', icon: '🎖️', key: 'exercise' },
+    { name: 'Procurement', icon: '📋', key: 'procurement' },
+    { name: 'Space/ISRO', icon: '🛰️', key: 'space' },
+  ].map(item => {
+    const c = cats[item.key] || { count: 0, critical: 0, high: 0 };
+    return { ...item, articles: c.count, activity: c.count >= 3 ? 'high' : c.count >= 1 ? 'moderate' : 'low', alert: c.critical > 0 || c.high > 0 };
+  });
+  
+  const data = { articles: articles.slice(0, 15), readiness, lastUpdated: new Date().toISOString() };
+  cache.set('defence', data);
+  console.log(`[DEFENCE] ${articles.length} articles cached`);
+  return data;
+}
+
+// ══════════════════════════════════════
 // API ROUTES
 // ══════════════════════════════════════
 app.get('/api/health', (req, res) => res.json({
@@ -571,9 +804,45 @@ app.get('/api/all', async (req, res) => {
   });
 });
 
+// Phase 2 routes
+app.get('/api/news/hindi', async (req, res) => {
+  try {
+    let d = cache.get('news_hindi'); if (!d) d = await fetchRegionalNews('hindi');
+    res.json({ success: true, count: d.length, data: d });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.get('/api/news/marathi', async (req, res) => {
+  try {
+    let d = cache.get('news_marathi'); if (!d) d = await fetchRegionalNews('marathi');
+    res.json({ success: true, count: d.length, data: d });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.get('/api/news/bangla', async (req, res) => {
+  try {
+    let d = cache.get('news_bangla'); if (!d) d = await fetchRegionalNews('bangla');
+    res.json({ success: true, count: d.length, data: d });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.get('/api/cyber', async (req, res) => {
+  try {
+    let d = cache.get('cyber'); if (!d) d = await fetchCyber();
+    res.json({ success: true, data: d });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.get('/api/defence', async (req, res) => {
+  try {
+    let d = cache.get('defence'); if (!d) d = await fetchDefence();
+    res.json({ success: true, data: d });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
 // Root route
 app.get('/', (req, res) => {
-  res.json({ name: 'India Monitor API', version: '1.0.0', status: 'running', endpoints: ['/api/health','/api/news','/api/markets','/api/earthquakes','/api/weather','/api/airquality','/api/cricket','/api/football','/api/sports','/api/all'] });
+  res.json({ name: 'India Monitor API', version: '2.0.0', status: 'running', endpoints: ['/api/health','/api/news','/api/news/hindi','/api/news/marathi','/api/news/bangla','/api/markets','/api/earthquakes','/api/weather','/api/airquality','/api/cricket','/api/football','/api/sports','/api/cyber','/api/defence','/api/all'] });
 });
 
 // ══════════════════════════════════════
@@ -586,13 +855,16 @@ cron.schedule('*/10 * * * *', () => fetchQuakes().catch(console.error));
 cron.schedule('*/30 * * * *', () => fetchWeather().catch(console.error));
 cron.schedule('*/30 * * * *', () => fetchAQI().catch(console.error));
 cron.schedule('*/2 * * * *', () => fetchAllSports().catch(console.error)); // Sports: every 2 min (live scores need frequent updates)
+cron.schedule('*/5 * * * *', () => Promise.allSettled([fetchRegionalNews('hindi'),fetchRegionalNews('marathi'),fetchRegionalNews('bangla')]).catch(console.error)); // Regional news: 5 min
+cron.schedule('*/15 * * * *', () => fetchCyber().catch(console.error));    // Cyber: 15 min
+cron.schedule('*/10 * * * *', () => fetchDefence().catch(console.error));   // Defence: 10 min
 
 // ══════════════════════════════════════
 // BOOT
 // ══════════════════════════════════════
 async function boot() {
-  console.log('🇮🇳 INDIA MONITOR v1.0 — Starting...');
-  await Promise.allSettled([fetchAllNews(), fetchMarkets(), fetchQuakes(), fetchWeather(), fetchAQI(), fetchAllSports()]);
+  console.log('🇮🇳 INDIA MONITOR v2.0 — Starting...');
+  await Promise.allSettled([fetchAllNews(), fetchMarkets(), fetchQuakes(), fetchWeather(), fetchAQI(), fetchAllSports(), fetchRegionalNews('hindi'), fetchRegionalNews('marathi'), fetchRegionalNews('bangla'), fetchCyber(), fetchDefence()]);
   console.log('✅ Initial data loaded');
   app.listen(PORT, () => {
     console.log(`🚀 Server on port ${PORT}`);
