@@ -155,18 +155,7 @@ async function fetchMarkets() {
     }
   } catch (e) { console.error(`[MKT] Exchange rate: ${e.message}`); }
 
-  // Source 3: CoinGecko (crypto)
-  try {
-    const r = await safeFetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,ripple&vs_currencies=inr&include_24hr_change=true', { timeout: 8000 });
-    const d = await r.json();
-    if (d.bitcoin) addQuote({ name: 'BTC/INR', symbol: 'BTC-INR', type: 'crypto', price: d.bitcoin.inr, change: 0, changePct: d.bitcoin.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
-    if (d.ethereum) addQuote({ name: 'ETH/INR', symbol: 'ETH-INR', type: 'crypto', price: d.ethereum.inr, change: 0, changePct: d.ethereum.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
-    if (d.solana) addQuote({ name: 'SOL/INR', symbol: 'SOL-INR', type: 'crypto', price: d.solana.inr, change: 0, changePct: d.solana.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
-    if (d.ripple) addQuote({ name: 'XRP/INR', symbol: 'XRP-INR', type: 'crypto', price: d.ripple.inr, change: 0, changePct: d.ripple.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
-    console.log(`[MKT] CoinGecko: crypto added`);
-  } catch (e) { console.error(`[MKT] CoinGecko: ${e.message}`); }
-
-  // Source 4: Commodity prices via metals-api alternative
+  // Source 3: Metal prices API for commodity tab
   try {
     const r = await safeFetch('https://api.metalpriceapi.com/v1/latest?api_key=demo&base=USD&currencies=XAU,XAG', { timeout: 8000 });
     const d = await r.json();
