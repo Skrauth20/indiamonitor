@@ -302,8 +302,8 @@ async function fetchWeather() {
           updatedAt: new Date().toISOString(),
         });
       }
-      // Small delay between requests to avoid 429
-      await new Promise(ok => setTimeout(ok, 800));
+      // 2 second delay between requests to respect Open-Meteo free tier rate limit
+      await new Promise(ok => setTimeout(ok, 2000));
     } catch (e) { console.error(`[WX] ${c.n}: ${e.message}`); }
   }
 
@@ -330,14 +330,15 @@ async function fetchAQI() {
   const results = [];
   for (const c of CITIES.slice(0, 5)) {
     try {
-      const r = await safeFetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${c.la}&longitude=${c.lo}&current=pm2_5,pm10,us_aqi`, { timeout: 6000 });
+      const r = await safeFetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${c.la}&longitude=${c.lo}&current=pm2_5,pm10,us_aqi`, { timeout: 10000 });
       const d = await r.json(); const cur = d.current || {};
       results.push({
         city: c.n, lat: c.la, lng: c.lo,
         aqi: cur.us_aqi, pm25: cur.pm2_5, pm10: cur.pm10,
         level: aqiLvl(cur.us_aqi), updatedAt: new Date().toISOString(),
       });
-    } catch (e) { /* skip */ }
+      await new Promise(ok => setTimeout(ok, 1500));
+    } catch (e) { console.error(`[AQI] ${c.n}: ${e.message}`); }
   }
   cache.set('airquality', results);
   console.log(`[AQI] ${results.length} cities cached`);
@@ -1009,8 +1010,8 @@ cron.schedule('*/5 * * * *', () => fetchAllNews().catch(console.error));
 cron.schedule('*/3 9-15 * * 1-5', () => fetchMarkets().catch(console.error));
 cron.schedule('*/15 0-8,16-23 * * *', () => fetchMarkets().catch(console.error));
 cron.schedule('*/10 * * * *', () => fetchQuakes().catch(console.error));
-cron.schedule('*/30 * * * *', () => fetchWeather().catch(console.error));
-cron.schedule('*/30 * * * *', () => fetchAQI().catch(console.error));
+cron.schedule('5,35 * * * *', () => fetchWeather().catch(console.error));  // Weather: at :05 and :35
+cron.schedule('20,50 * * * *', () => fetchAQI().catch(console.error));    // AQI: at :20 and :50 (offset from weather)
 cron.schedule('*/2 * * * *', () => fetchAllSports().catch(console.error)); // Sports: every 2 min (live scores need frequent updates)
 cron.schedule('*/5 * * * *', () => Promise.allSettled(Object.keys(REGIONAL_FEEDS).map(l => fetchRegionalNews(l))).catch(console.error)); // Regional news: 5 min
 cron.schedule('*/15 * * * *', () => fetchCyber().catch(console.error));    // Cyber: 15 min
@@ -1027,8 +1028,10 @@ async function boot() {
   // Phase 2: Rate-limited APIs (weather, AQI, markets, cyber) — stagger
   await Promise.allSettled([fetchMarkets(), fetchCyber()]);
   console.log('✅ Phase 2 loaded (markets, cyber)');
-  // Phase 3: Weather + AQI last (Open-Meteo rate limits)
+  // Phase 3: Weather + AQI last (Open-Meteo rate limits — need gaps)
   await fetchWeather();
+  console.log('[BOOT] Waiting 5s before AQI to avoid Open-Meteo rate limit...');
+  await new Promise(ok => setTimeout(ok, 5000));
   await fetchAQI();
   console.log('✅ Phase 3 loaded (weather, AQI)');
   app.listen(PORT, () => {
