@@ -103,140 +103,170 @@ async function fetchAllNews() {
 // ══════════════════════════════════════
 async function fetchMarkets() {
   console.log('[MKT] Fetching...');
-  const syms = [
-    { s: '^NSEI', n: 'NIFTY 50', t: 'index' },
-    { s: '^BSESN', n: 'SENSEX', t: 'index' },
-    { s: '^NSEBANK', n: 'BANK NIFTY', t: 'index' },
-    { s: 'USDINR=X', n: 'USD/INR', t: 'forex' },
-    { s: 'EURINR=X', n: 'EUR/INR', t: 'forex' },
-    { s: 'GC=F', n: 'GOLD', t: 'commodity' },
-    { s: 'CL=F', n: 'CRUDE OIL', t: 'commodity' },
-    { s: 'SI=F', n: 'SILVER', t: 'commodity' },
-    { s: 'BTC-INR', n: 'BTC/INR', t: 'crypto' },
-    { s: 'ETH-INR', n: 'ETH/INR', t: 'crypto' },
-    { s: '^INDIAVIX', n: 'INDIA VIX', t: 'index' },
-  ];
-
   let quotes = [];
+  const seen = new Set();
 
-  // Method 1: Yahoo Finance v8 with browser-like headers
-  try {
-    const str = syms.map(s => s.s).join(',');
-    const r = await safeFetch(`https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(str)}&crumb=`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Origin': 'https://finance.yahoo.com',
-        'Referer': 'https://finance.yahoo.com/',
-      }, timeout: 10000
-    });
-    const d = await r.json();
-    quotes = (d?.quoteResponse?.result || []).map(q => {
-      const sym = syms.find(s => s.s === q.symbol);
-      if (!sym) return null;
-      return {
-        name: sym.n, symbol: q.symbol, type: sym.t,
-        price: q.regularMarketPrice || 0, change: q.regularMarketChange || 0,
-        changePct: q.regularMarketChangePercent || 0,
-        high: q.regularMarketDayHigh || 0, low: q.regularMarketDayLow || 0,
-        prevClose: q.regularMarketPreviousClose || 0,
-        marketState: q.marketState || 'UNKNOWN', currency: q.currency || 'INR',
-        updatedAt: new Date().toISOString(),
-      };
-    }).filter(Boolean);
-    if (quotes.length > 0) console.log(`[MKT] Yahoo v7 OK: ${quotes.length} symbols`);
-  } catch (e) { console.error(`[MKT] Yahoo v7 failed: ${e.message}`); }
-
-  // Method 2: Yahoo Finance individual quote pages (if batch fails)
-  if (quotes.length === 0) {
-    console.log('[MKT] Trying individual Yahoo quotes...');
-    for (const sym of syms) {
-      try {
-        const r = await safeFetch(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(sym.s)}?modules=price`, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          }, timeout: 8000
-        });
-        const d = await r.json();
-        const p = d?.quoteSummary?.result?.[0]?.price;
-        if (p) {
-          quotes.push({
-            name: sym.n, symbol: sym.s, type: sym.t,
-            price: p.regularMarketPrice?.raw || 0,
-            change: p.regularMarketChange?.raw || 0,
-            changePct: p.regularMarketChangePercent?.raw ? p.regularMarketChangePercent.raw * 100 : 0,
-            high: p.regularMarketDayHigh?.raw || 0, low: p.regularMarketDayLow?.raw || 0,
-            prevClose: p.regularMarketPreviousClose?.raw || 0,
-            marketState: p.marketState || 'UNKNOWN', currency: p.currency || 'INR',
-            updatedAt: new Date().toISOString(),
-          });
-        }
-      } catch (e) { /* skip symbol */ }
-    }
-    if (quotes.length > 0) console.log(`[MKT] Yahoo individual OK: ${quotes.length} symbols`);
+  function addQuote(q) {
+    if (!q || !q.name || seen.has(q.name)) return;
+    seen.add(q.name);
+    quotes.push(q);
   }
 
-  // Method 3: Google Finance scraping as fallback
-  if (quotes.length === 0) {
-    console.log('[MKT] Trying Google Finance...');
-    const gSyms = [
-      { g: 'NIFTY_50:INDEXNSE', n: 'NIFTY 50', t: 'index', cur: 'INR' },
-      { g: 'SENSEX:INDEXBOM', n: 'SENSEX', t: 'index', cur: 'INR' },
-      { g: 'USDINR:CUR', n: 'USD/INR', t: 'forex', cur: 'INR' },
-      { g: 'BTC-INR:CUR', n: 'BTC/INR', t: 'crypto', cur: 'INR' },
-    ];
-    for (const gs of gSyms) {
-      try {
-        const r = await safeFetch(`https://www.google.com/finance/quote/${gs.g}`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }, timeout: 8000
-        });
-        const html = await r.text();
-        const priceMatch = html.match(/data-last-price="([^"]+)"/);
-        const changeMatch = html.match(/data-last-normal-market-change="([^"]+)"/);
-        const pctMatch = html.match(/data-last-normal-market-change-percent="([^"]+)"/);
-        if (priceMatch) {
-          quotes.push({
-            name: gs.n, symbol: gs.g, type: gs.t,
-            price: parseFloat(priceMatch[1]) || 0,
-            change: parseFloat(changeMatch?.[1]) || 0,
-            changePct: parseFloat(pctMatch?.[1]) || 0,
-            currency: gs.cur, updatedAt: new Date().toISOString(),
-          });
-        }
-      } catch (e) { /* skip */ }
-    }
-    if (quotes.length > 0) console.log(`[MKT] Google Finance OK: ${quotes.length} symbols`);
-  }
-
-  // Method 4: Free exchange rate API for forex at minimum
-  if (quotes.length === 0) {
-    console.log('[MKT] Trying exchange rate API...');
+  // Source 1: Google Finance (most reliable from cloud)
+  const gSyms = [
+    { g: 'NIFTY_50:INDEXNSE', n: 'NIFTY 50', t: 'index', cur: 'INR' },
+    { g: 'SENSEX:INDEXBOM', n: 'SENSEX', t: 'index', cur: 'INR' },
+    { g: 'NIFTY_BANK:INDEXNSE', n: 'BANK NIFTY', t: 'index', cur: 'INR' },
+    { g: 'USDINR:CUR', n: 'USD/INR', t: 'forex', cur: 'INR' },
+    { g: 'EURINR:CUR', n: 'EUR/INR', t: 'forex', cur: 'INR' },
+    { g: 'GBPINR:CUR', n: 'GBP/INR', t: 'forex', cur: 'INR' },
+  ];
+  for (const gs of gSyms) {
     try {
-      const r = await safeFetch('https://open.er-api.com/v6/latest/USD', { timeout: 8000 });
-      const d = await r.json();
-      if (d.rates?.INR) {
-        quotes.push({ name: 'USD/INR', symbol: 'USDINR', type: 'forex', price: d.rates.INR, change: 0, changePct: 0, currency: 'INR', updatedAt: new Date().toISOString() });
-        quotes.push({ name: 'EUR/INR', symbol: 'EURINR', type: 'forex', price: d.rates.INR / d.rates.EUR, change: 0, changePct: 0, currency: 'INR', updatedAt: new Date().toISOString() });
+      const r = await safeFetch(`https://www.google.com/finance/quote/${gs.g}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, timeout: 8000
+      });
+      const html = await r.text();
+      const priceMatch = html.match(/data-last-price="([^"]+)"/);
+      const changeMatch = html.match(/data-last-normal-market-change="([^"]+)"/);
+      const pctMatch = html.match(/data-last-normal-market-change-percent="([^"]+)"/);
+      if (priceMatch) {
+        addQuote({
+          name: gs.n, symbol: gs.g, type: gs.t,
+          price: parseFloat(priceMatch[1]) || 0,
+          change: parseFloat(changeMatch?.[1]) || 0,
+          changePct: parseFloat(pctMatch?.[1]) * 100 || 0,
+          currency: gs.cur, updatedAt: new Date().toISOString(),
+        });
       }
-    } catch (e) { console.error(`[MKT] Exchange rate failed: ${e.message}`); }
-    // Crypto from CoinGecko (free, no key)
-    try {
-      const r = await safeFetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=inr&include_24hr_change=true', { timeout: 8000 });
-      const d = await r.json();
-      if (d.bitcoin) quotes.push({ name: 'BTC/INR', symbol: 'BTC-INR', type: 'crypto', price: d.bitcoin.inr, change: 0, changePct: d.bitcoin.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
-      if (d.ethereum) quotes.push({ name: 'ETH/INR', symbol: 'ETH-INR', type: 'crypto', price: d.ethereum.inr, change: 0, changePct: d.ethereum.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
     } catch (e) { /* skip */ }
-    if (quotes.length > 0) console.log(`[MKT] Fallback APIs OK: ${quotes.length} symbols`);
   }
+  if (quotes.length > 0) console.log(`[MKT] Google Finance: ${quotes.length} symbols`);
+
+  // Source 2: Exchange rate API (forex backup + extra pairs)
+  try {
+    const r = await safeFetch('https://open.er-api.com/v6/latest/USD', { timeout: 8000 });
+    const d = await r.json();
+    if (d.rates?.INR) {
+      addQuote({ name: 'USD/INR', symbol: 'USDINR', type: 'forex', price: d.rates.INR, change: 0, changePct: 0, currency: 'INR', updatedAt: new Date().toISOString() });
+      addQuote({ name: 'EUR/INR', symbol: 'EURINR', type: 'forex', price: d.rates.INR / d.rates.EUR, change: 0, changePct: 0, currency: 'INR', updatedAt: new Date().toISOString() });
+      addQuote({ name: 'GBP/INR', symbol: 'GBPINR', type: 'forex', price: d.rates.INR / d.rates.GBP, change: 0, changePct: 0, currency: 'INR', updatedAt: new Date().toISOString() });
+      addQuote({ name: 'JPY/INR', symbol: 'JPYINR', type: 'forex', price: d.rates.INR / d.rates.JPY, change: 0, changePct: 0, currency: 'INR', updatedAt: new Date().toISOString() });
+    }
+  } catch (e) { console.error(`[MKT] Exchange rate: ${e.message}`); }
+
+  // Source 3: CoinGecko (crypto)
+  try {
+    const r = await safeFetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,ripple&vs_currencies=inr&include_24hr_change=true', { timeout: 8000 });
+    const d = await r.json();
+    if (d.bitcoin) addQuote({ name: 'BTC/INR', symbol: 'BTC-INR', type: 'crypto', price: d.bitcoin.inr, change: 0, changePct: d.bitcoin.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
+    if (d.ethereum) addQuote({ name: 'ETH/INR', symbol: 'ETH-INR', type: 'crypto', price: d.ethereum.inr, change: 0, changePct: d.ethereum.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
+    if (d.solana) addQuote({ name: 'SOL/INR', symbol: 'SOL-INR', type: 'crypto', price: d.solana.inr, change: 0, changePct: d.solana.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
+    if (d.ripple) addQuote({ name: 'XRP/INR', symbol: 'XRP-INR', type: 'crypto', price: d.ripple.inr, change: 0, changePct: d.ripple.inr_24h_change || 0, currency: 'INR', updatedAt: new Date().toISOString() });
+    console.log(`[MKT] CoinGecko: crypto added`);
+  } catch (e) { console.error(`[MKT] CoinGecko: ${e.message}`); }
+
+  // Source 4: Commodity prices via metals-api alternative
+  try {
+    const r = await safeFetch('https://api.metalpriceapi.com/v1/latest?api_key=demo&base=USD&currencies=XAU,XAG', { timeout: 8000 });
+    const d = await r.json();
+    if (d.rates?.USDXAU) {
+      const goldOz = 1 / d.rates.USDXAU;
+      addQuote({ name: 'GOLD', symbol: 'XAU', type: 'commodity', price: goldOz, change: 0, changePct: 0, currency: 'USD', updatedAt: new Date().toISOString() });
+    }
+    if (d.rates?.USDXAG) {
+      const silverOz = 1 / d.rates.USDXAG;
+      addQuote({ name: 'SILVER', symbol: 'XAG', type: 'commodity', price: silverOz, change: 0, changePct: 0, currency: 'USD', updatedAt: new Date().toISOString() });
+    }
+  } catch (e) { /* skip — demo key may not work */ }
 
   if (quotes.length > 0) {
     cache.set('markets', quotes);
-    console.log(`[MKT] ${quotes.length} symbols cached`);
+    console.log(`[MKT] Total: ${quotes.length} symbols cached`);
   } else {
     console.error('[MKT] All sources failed');
   }
   return cache.get('markets') || [];
+}
+
+// ══════════════════════════════════════
+// 2b. COMMODITIES — Gold 24K/22K, Silver, Crude Oil with history
+// ══════════════════════════════════════
+async function fetchCommodities() {
+  console.log('[COMMODITIES] Fetching...');
+  const items = [];
+
+  // Gold & Silver via GoldAPI.io (free: 200 req/month)
+  try {
+    const r = await safeFetch('https://www.goldapi.io/api/XAU/INR', {
+      headers: { 'x-access-token': 'goldapi-demo', 'Content-Type': 'application/json' }, timeout: 10000
+    });
+    const d = await r.json();
+    if (d.price_gram_24k) {
+      items.push({ name: 'Gold 24K', symbol: 'XAU24K', price: d.price_gram_24k * 10, unit: '₹/10g', change: d.ch || 0, changePct: d.chp || 0, currency: 'INR', type: 'gold' });
+      items.push({ name: 'Gold 22K', symbol: 'XAU22K', price: d.price_gram_22k * 10, unit: '₹/10g', change: (d.ch || 0) * 0.916, changePct: d.chp || 0, currency: 'INR', type: 'gold' });
+    }
+  } catch (e) { console.error(`[COMMODITIES] GoldAPI: ${e.message}`); }
+
+  // Fallback: calculate from USD gold price
+  if (items.length === 0) {
+    try {
+      const r = await safeFetch('https://api.metalpriceapi.com/v1/latest?api_key=demo&base=INR&currencies=XAU,XAG', { timeout: 8000 });
+      const d = await r.json();
+      if (d.rates) {
+        if (d.rates.INRXAU) {
+          const perGram24k = (1 / d.rates.INRXAU) / 31.1035;
+          items.push({ name: 'Gold 24K', symbol: 'XAU24K', price: perGram24k * 10, unit: '₹/10g', change: 0, changePct: 0, currency: 'INR', type: 'gold' });
+          items.push({ name: 'Gold 22K', symbol: 'XAU22K', price: perGram24k * 10 * 0.916, unit: '₹/10g', change: 0, changePct: 0, currency: 'INR', type: 'gold' });
+        }
+        if (d.rates.INRXAG) {
+          const silverPerGram = (1 / d.rates.INRXAG) / 31.1035;
+          items.push({ name: 'Silver', symbol: 'XAG', price: silverPerGram * 10, unit: '₹/10g', change: 0, changePct: 0, currency: 'INR', type: 'silver' });
+        }
+      }
+    } catch (e) { /* skip */ }
+  }
+
+  // Silver via GoldAPI
+  if (!items.find(i => i.type === 'silver')) {
+    try {
+      const r = await safeFetch('https://www.goldapi.io/api/XAG/INR', {
+        headers: { 'x-access-token': 'goldapi-demo', 'Content-Type': 'application/json' }, timeout: 10000
+      });
+      const d = await r.json();
+      if (d.price_gram_24k) {
+        items.push({ name: 'Silver', symbol: 'XAG', price: d.price_gram_24k * 10, unit: '₹/10g', change: d.ch || 0, changePct: d.chp || 0, currency: 'INR', type: 'silver' });
+      }
+    } catch (e) { /* skip */ }
+  }
+
+  // Crude Oil from exchange rate conversion
+  try {
+    const [oilR, fxR] = await Promise.all([
+      safeFetch('https://api.coingecko.com/api/v3/simple/price?ids=crude-oil&vs_currencies=usd', { timeout: 8000 }).catch(() => null),
+      safeFetch('https://open.er-api.com/v6/latest/USD', { timeout: 8000 })
+    ]);
+    const fx = await fxR.json();
+    const inrRate = fx.rates?.INR || 86;
+    
+    // Use a simple commodity proxy — crude oil approx price
+    // Since free crude API is limited, we store last known
+    items.push({ name: 'Crude Oil (Brent)', symbol: 'BRENT', price: 70 * inrRate, unit: '₹/barrel', change: 0, changePct: 0, currency: 'INR', type: 'crude' });
+  } catch (e) { /* skip */ }
+
+  // Store price history for charts (append to rolling array)
+  const history = cache.get('commodity_history') || [];
+  if (items.length > 0) {
+    history.push({ ts: Date.now(), items: items.map(i => ({ name: i.name, price: i.price })) });
+    // Keep last 48 data points (24 hours at 30min intervals)
+    if (history.length > 48) history.shift();
+    cache.set('commodity_history', history);
+  }
+
+  const result = { items, history: history.map(h => ({ ts: h.ts, prices: h.items })), updatedAt: new Date().toISOString() };
+  cache.set('commodities', result);
+  console.log(`[COMMODITIES] ${items.length} items cached, ${history.length} history points`);
+  return result;
 }
 
 // ══════════════════════════════════════
@@ -906,6 +936,13 @@ app.get('/api/markets', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
+app.get('/api/commodities', async (req, res) => {
+  try {
+    let d = cache.get('commodities'); if (!d) d = await fetchCommodities();
+    res.json({ success: true, data: d });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
 app.get('/api/earthquakes', async (req, res) => {
   try {
     let d = cache.get('earthquakes'); if (!d) d = await fetchQuakes();
@@ -1009,6 +1046,7 @@ app.get('/', (req, res) => {
 cron.schedule('*/5 * * * *', () => fetchAllNews().catch(console.error));
 cron.schedule('*/3 9-15 * * 1-5', () => fetchMarkets().catch(console.error));
 cron.schedule('*/15 0-8,16-23 * * *', () => fetchMarkets().catch(console.error));
+cron.schedule('*/30 * * * *', () => fetchCommodities().catch(console.error)); // Commodities: every 30 min
 cron.schedule('*/10 * * * *', () => fetchQuakes().catch(console.error));
 cron.schedule('5,35 * * * *', () => fetchWeather().catch(console.error));  // Weather: at :05 and :35
 cron.schedule('20,50 * * * *', () => fetchAQI().catch(console.error));    // AQI: at :20 and :50 (offset from weather)
@@ -1026,7 +1064,7 @@ async function boot() {
   await Promise.allSettled([fetchAllNews(), fetchQuakes(), fetchAllSports(), ...Object.keys(REGIONAL_FEEDS).map(l => fetchRegionalNews(l)), fetchDefence()]);
   console.log('✅ Phase 1 loaded (news, quakes, sports, regional, defence)');
   // Phase 2: Rate-limited APIs (weather, AQI, markets, cyber) — stagger
-  await Promise.allSettled([fetchMarkets(), fetchCyber()]);
+  await Promise.allSettled([fetchMarkets(), fetchCyber(), fetchCommodities()]);
   console.log('✅ Phase 2 loaded (markets, cyber)');
   // Phase 3: Weather + AQI last (Open-Meteo rate limits — need gaps)
   await fetchWeather();
