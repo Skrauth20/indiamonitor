@@ -286,59 +286,31 @@ async function fetchWeather() {
   console.log('[WX] Fetching...');
   const results = [];
   
-  // Method 1: Open-Meteo batch (all cities in one request)
-  try {
-    const lats = CITIES.map(c => c.la).join(',');
-    const lons = CITIES.map(c => c.lo).join(',');
-    const r = await safeFetch(`https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&current=temperature_2m,wind_speed_10m,weather_code,relative_humidity_2m&timezone=Asia/Kolkata`, { timeout: 15000 });
-    const d = await r.json();
-    // Batch response returns arrays
-    if (Array.isArray(d)) {
-      d.forEach((city, i) => {
-        const cur = city.current || {};
+  // Open-Meteo allows ~10 req/min on free tier. Fetch one city at a time with delay.
+  for (const c of CITIES) {
+    try {
+      const r = await safeFetch(`https://api.open-meteo.com/v1/forecast?latitude=${c.la}&longitude=${c.lo}&current=temperature_2m,wind_speed_10m,weather_code,relative_humidity_2m&timezone=Asia/Kolkata`, {
+        headers: { 'User-Agent': 'IndiaMonitor/2.0 (https://indiamonitor.app)' },
+        timeout: 12000
+      });
+      const d = await r.json(); const cur = d.current || {};
+      if (cur.temperature_2m !== undefined) {
         results.push({
-          city: CITIES[i].n, lat: CITIES[i].la, lng: CITIES[i].lo,
+          city: c.n, lat: c.la, lng: c.lo,
           temperature: cur.temperature_2m, windSpeed: cur.wind_speed_10m,
           humidity: cur.relative_humidity_2m, condition: wxText(cur.weather_code),
           updatedAt: new Date().toISOString(),
         });
-      });
-    } else if (d.current) {
-      // Single city response (fallback format)
-      const cur = d.current;
-      results.push({
-        city: CITIES[0].n, lat: CITIES[0].la, lng: CITIES[0].lo,
-        temperature: cur.temperature_2m, windSpeed: cur.wind_speed_10m,
-        humidity: cur.relative_humidity_2m, condition: wxText(cur.weather_code),
-        updatedAt: new Date().toISOString(),
-      });
-    }
-    if (results.length > 0) console.log(`[WX] Batch OK: ${results.length} cities`);
-  } catch (e) { console.error(`[WX] Batch failed: ${e.message}`); }
-
-  // Method 2: Individual requests if batch failed
-  if (results.length === 0) {
-    console.log('[WX] Trying individual city requests...');
-    for (const c of CITIES) {
-      try {
-        const r = await safeFetch(`https://api.open-meteo.com/v1/forecast?latitude=${c.la}&longitude=${c.lo}&current=temperature_2m,wind_speed_10m,weather_code,relative_humidity_2m&timezone=Asia/Kolkata`, { timeout: 10000 });
-        const d = await r.json(); const cur = d.current || {};
-        if (cur.temperature_2m !== undefined) {
-          results.push({
-            city: c.n, lat: c.la, lng: c.lo,
-            temperature: cur.temperature_2m, windSpeed: cur.wind_speed_10m,
-            humidity: cur.relative_humidity_2m, condition: wxText(cur.weather_code),
-            updatedAt: new Date().toISOString(),
-          });
-        }
-      } catch (e) { console.error(`[WX] ${c.n}: ${e.message}`); }
-    }
+      }
+      // Small delay between requests to avoid 429
+      await new Promise(ok => setTimeout(ok, 800));
+    } catch (e) { console.error(`[WX] ${c.n}: ${e.message}`); }
   }
 
   if (results.length > 0) {
     cache.set('weather', results);
   } else {
-    console.error('[WX] All sources failed — keeping stale cache');
+    console.error('[WX] All failed — keeping stale cache');
   }
   console.log(`[WX] ${results.length} cities cached`);
   return cache.get('weather') || [];
@@ -546,22 +518,22 @@ const REGIONAL_FEEDS = {
     { name: 'अमर उजाला', url: 'https://www.amarujala.com/rss/breaking-news.xml' },
     { name: 'BBC हिन्दी', url: 'https://feeds.bbci.co.uk/hindi/rss.xml' },
     { name: 'NDTV हिन्दी', url: 'https://hindi.ndtv.com/feeds' },
-    { name: 'Zee News हिन्दी', url: 'https://zeenews.india.com/hindi/rss' },
-    { name: 'India TV हिन्दी', url: 'https://feed.indiatv.in/rss/hindi_news.xml' },
+    { name: 'Aaj Tak', url: 'https://aajtak.intoday.in/rss/default.xml' },
+    { name: 'Patrika', url: 'https://api.patrika.com/rss/top-news' },
   ],
   marathi: [
     { name: 'TV9 मराठी', url: 'https://www.tv9marathi.com/feed' },
-    { name: 'Zee 24 Taas', url: 'https://zeenews.india.com/marathi/rss' },
     { name: 'Pudhari', url: 'https://www.pudhari.news/feed/' },
-    { name: 'Divya Marathi', url: 'https://divyamarathi.bhaskar.com/rss-feed/1061' },
-    { name: 'Lokmat', url: 'https://www.lokmat.com/feed/' },
+    { name: 'Saam TV', url: 'https://www.saamtv.com/feed/' },
+    { name: 'India.com Marathi', url: 'https://www.india.com/marathi/feed/' },
+    { name: 'News18 Lokmat', url: 'https://lokmat.news18.com/rss/khabar.xml' },
   ],
   bangla: [
     { name: 'Sangbad Pratidin', url: 'https://www.sangbadpratidin.in/feed/' },
     { name: 'TV9 Bangla', url: 'https://tv9bangla.com/feed' },
-    { name: 'News18 Bangla', url: 'https://bengali.news18.com/rss/khabar.xml' },
-    { name: 'Zee Bangla News', url: 'https://zeenews.india.com/bengali/rss' },
-    { name: 'Kolkata24x7', url: 'https://kolkata24x7.com/feed' },
+    { name: 'India.com Bangla', url: 'https://www.india.com/bangla/feed/' },
+    { name: 'Dainik Statesman', url: 'https://www.dailystatesman.com/feed/' },
+    { name: 'Bangla News 24', url: 'https://banglanews24.com/rss/rss.xml' },
   ],
 };
 
@@ -905,11 +877,19 @@ cron.schedule('*/10 * * * *', () => fetchDefence().catch(console.error));   // D
 // ══════════════════════════════════════
 async function boot() {
   console.log('🇮🇳 INDIA MONITOR v2.0 — Starting...');
-  await Promise.allSettled([fetchAllNews(), fetchMarkets(), fetchQuakes(), fetchWeather(), fetchAQI(), fetchAllSports(), fetchRegionalNews('hindi'), fetchRegionalNews('marathi'), fetchRegionalNews('bangla'), fetchCyber(), fetchDefence()]);
-  console.log('✅ Initial data loaded');
+  // Phase 1: Fast fetchers (no rate limit issues)
+  await Promise.allSettled([fetchAllNews(), fetchQuakes(), fetchAllSports(), fetchRegionalNews('hindi'), fetchRegionalNews('marathi'), fetchRegionalNews('bangla'), fetchDefence()]);
+  console.log('✅ Phase 1 loaded (news, quakes, sports, regional, defence)');
+  // Phase 2: Rate-limited APIs (weather, AQI, markets, cyber) — stagger
+  await Promise.allSettled([fetchMarkets(), fetchCyber()]);
+  console.log('✅ Phase 2 loaded (markets, cyber)');
+  // Phase 3: Weather + AQI last (Open-Meteo rate limits)
+  await fetchWeather();
+  await fetchAQI();
+  console.log('✅ Phase 3 loaded (weather, AQI)');
   app.listen(PORT, () => {
     console.log(`🚀 Server on port ${PORT}`);
-    console.log(`   /api/health | /api/news | /api/markets | /api/earthquakes | /api/weather | /api/airquality | /api/sports | /api/cricket | /api/football | /api/all`);
+    console.log(`   /api/health | /api/news | /api/news/hindi | /api/news/marathi | /api/news/bangla | /api/markets | /api/earthquakes | /api/weather | /api/airquality | /api/cricket | /api/football | /api/cyber | /api/defence | /api/all`);
   });
 }
 boot();
