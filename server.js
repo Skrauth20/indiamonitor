@@ -943,6 +943,47 @@ app.get('/api/commodities', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
+// YouTube Live Stream Video ID resolver
+app.get('/api/youtube-live', async (req, res) => {
+  const channelId = req.query.channel;
+  if (!channelId) return res.json({ videoId: null });
+  
+  const cacheKey = `yt_live_${channelId}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return res.json(cached);
+  
+  try {
+    const r = await safeFetch(`https://www.youtube.com/channel/${channelId}/live`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      timeout: 10000
+    });
+    const html = await r.text();
+    
+    // Extract video ID from the canonical URL or player config
+    let videoId = null;
+    const canonicalMatch = html.match(/\"videoId\":\"([a-zA-Z0-9_-]{11})\"/);
+    if (canonicalMatch) videoId = canonicalMatch[1];
+    
+    if (!videoId) {
+      const altMatch = html.match(/watch\?v=([a-zA-Z0-9_-]{11})/);
+      if (altMatch) videoId = altMatch[1];
+    }
+    
+    // Check if it's actually a live stream
+    const isLive = html.includes('"isLive":true') || html.includes('"isLiveNow":true') || html.includes('LIVE NOW');
+    
+    const result = { videoId: isLive ? videoId : videoId, isLive, channelId };
+    cache.set(cacheKey, result, 300); // cache for 5 min
+    res.json(result);
+  } catch (e) {
+    console.error(`[YT-LIVE] ${channelId}: ${e.message}`);
+    res.json({ videoId: null, error: e.message });
+  }
+});
+
 app.get('/api/earthquakes', async (req, res) => {
   try {
     let d = cache.get('earthquakes'); if (!d) d = await fetchQuakes();
