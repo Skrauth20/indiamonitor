@@ -495,14 +495,128 @@ async function fetchFootball() {
 }
 
 // ══════════════════════════════════════
-// 8. ALL SPORTS COMBINED
+// 8. BASEBALL — ESPN MLB API
+// ══════════════════════════════════════
+async function fetchBaseball() {
+  console.log('[BASEBALL] Fetching...');
+  const results = { live: [], upcoming: [], recent: [] };
+
+  try {
+    const r = await safeFetch('https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard', {
+      headers: { 'User-Agent': 'IndiaMonitor/2.0' }, timeout: 10000
+    });
+    const d = await r.json();
+    (d.events || []).forEach(ev => {
+      const comp = ev.competitions?.[0];
+      if (!comp) return;
+      const match = {
+        id: ev.id,
+        name: ev.name || '',
+        shortName: ev.shortName || '',
+        league: 'MLB',
+        leagueSlug: 'mlb',
+        status: comp.status?.type?.description || '',
+        state: comp.status?.type?.state || '',
+        detail: comp.status?.type?.detail || '',
+        date: ev.date,
+        venue: comp.venue?.fullName || '',
+        teams: (comp.competitors || []).map(c => ({
+          name: c.team?.displayName || '',
+          abbr: c.team?.abbreviation || '',
+          score: c.score || '0',
+          logo: c.team?.logo || '',
+          winner: c.winner || false,
+          homeAway: c.homeAway || '',
+        })),
+        updatedAt: new Date().toISOString(),
+      };
+      if (match.state === 'in') results.live.push(match);
+      else if (match.state === 'post') results.recent.push(match);
+      else results.upcoming.push(match);
+    });
+  } catch (e) { console.error(`[BASEBALL] ESPN: ${e.message}`); }
+
+  results.upcoming.sort((a, b) => new Date(a.date) - new Date(b.date));
+  results.recent.sort((a, b) => new Date(b.date) - new Date(a.date));
+  results.upcoming = results.upcoming.slice(0, 15);
+  results.recent = results.recent.slice(0, 15);
+
+  cache.set('baseball', results);
+  console.log(`[BASEBALL] Live:${results.live.length} Upcoming:${results.upcoming.length} Recent:${results.recent.length}`);
+  return results;
+}
+
+// ══════════════════════════════════════
+// 9. BADMINTON — BWA/BWF Tournament RSS + ESPN
+// ══════════════════════════════════════
+async function fetchBadminton() {
+  console.log('[BADMINTON] Fetching...');
+  const results = { live: [], upcoming: [], recent: [], news: [] };
+
+  // ESPN doesn't have dedicated badminton scoreboard, so we use news feeds
+  // BWF tournament results via RSS
+  const RSSParser = require('rss-parser');
+  const parser = new RSSParser({ timeout: 10000, headers: { 'User-Agent': 'IndiaMonitor/2.0' } });
+
+  const feeds = [
+    { name: 'BWF', url: 'https://bwfbadminton.com/feed/' },
+    { name: 'BadmintonPlanet', url: 'https://www.badmintonplanet.com/feed/' },
+    { name: 'Sportskeeda Badminton', url: 'https://www.sportskeeda.com/feed/badminton' },
+  ];
+
+  for (const feed of feeds) {
+    try {
+      const parsed = await parser.parseURL(feed.url);
+      (parsed.items || []).slice(0, 6).forEach(item => {
+        const title = (item.title || '').trim();
+        const isResult = /won|beat|defeated|loses|lost|final|semifinal|quarter/i.test(title);
+        const isUpcoming = /draw|preview|schedule|vs|face|clash/i.test(title);
+        const isLive = /live|underway|ongoing/i.test(title);
+
+        const entry = {
+          id: item.guid || item.link || '',
+          name: title,
+          shortName: title.substring(0, 60),
+          league: 'Badminton',
+          leagueSlug: 'badminton',
+          status: isLive ? 'Live' : isResult ? 'Result' : isUpcoming ? 'Upcoming' : 'News',
+          state: isLive ? 'in' : isResult ? 'post' : 'pre',
+          detail: (item.contentSnippet || '').slice(0, 120),
+          date: item.pubDate || item.isoDate || '',
+          link: item.link || '',
+          source: feed.name,
+          teams: [],
+          updatedAt: new Date().toISOString(),
+        };
+
+        if (isLive) results.live.push(entry);
+        else if (isResult) results.recent.push(entry);
+        else if (isUpcoming) results.upcoming.push(entry);
+        else results.news.push(entry);
+      });
+    } catch (e) { console.error(`[BADMINTON] ${feed.name}: ${e.message}`); }
+  }
+
+  results.recent.sort((a, b) => new Date(b.date) - new Date(a.date));
+  results.upcoming = results.upcoming.slice(0, 10);
+  results.recent = results.recent.slice(0, 10);
+
+  cache.set('badminton', results);
+  console.log(`[BADMINTON] Live:${results.live.length} Upcoming:${results.upcoming.length} Recent:${results.recent.length} News:${results.news.length}`);
+  return results;
+}
+
+// ══════════════════════════════════════
+// 10. ALL SPORTS COMBINED
 // ══════════════════════════════════════
 async function fetchAllSports() {
   console.log('[SPORTS] Fetching all...');
-  await Promise.allSettled([fetchCricket(), fetchFootball()]);
+  await Promise.allSettled([fetchCricket(), fetchFootball(), fetchBaseball(), fetchBadminton()]);
   const combined = {
     cricket: cache.get('cricket') || { live: [], upcoming: [], recent: [] },
     football: cache.get('football') || { live: [], upcoming: [], recent: [] },
+    baseball: cache.get('baseball') || { live: [], upcoming: [], recent: [] },
+    badminton: cache.get('badminton') || { live: [], upcoming: [], recent: [] },
     updatedAt: new Date().toISOString(),
   };
   cache.set('sports', combined);
@@ -829,6 +943,20 @@ app.get('/api/cricket', async (req, res) => {
 app.get('/api/football', async (req, res) => {
   try {
     let d = cache.get('football'); if (!d) d = await fetchFootball();
+    res.json({ success: true, data: d });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.get('/api/baseball', async (req, res) => {
+  try {
+    let d = cache.get('baseball'); if (!d) d = await fetchBaseball();
+    res.json({ success: true, data: d });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.get('/api/badminton', async (req, res) => {
+  try {
+    let d = cache.get('badminton'); if (!d) d = await fetchBadminton();
     res.json({ success: true, data: d });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
