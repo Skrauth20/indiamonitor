@@ -185,69 +185,82 @@ async function fetchCommodities() {
   console.log('[COMMODITIES] Fetching...');
   const items = [];
 
-  // Gold & Silver via GoldAPI.io (free: 200 req/month)
+  // Get USD/INR rate first
+  let inrRate = 86;
   try {
-    const r = await safeFetch('https://www.goldapi.io/api/XAU/INR', {
-      headers: { 'x-access-token': 'goldapi-demo', 'Content-Type': 'application/json' }, timeout: 10000
+    const fxR = await safeFetch('https://open.er-api.com/v6/latest/USD', { timeout: 8000 });
+    const fxD = await fxR.json();
+    if (fxD.rates?.INR) inrRate = fxD.rates.INR;
+  } catch (e) { /* use default */ }
+
+  // Source 1: Google Finance for gold price in USD
+  try {
+    const r = await safeFetch('https://www.google.com/finance/quote/XAU-USD', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, timeout: 8000
     });
-    const d = await r.json();
-    if (d.price_gram_24k) {
-      items.push({ name: 'Gold 24K', symbol: 'XAU24K', price: d.price_gram_24k * 10, unit: '₹/10g', change: d.ch || 0, changePct: d.chp || 0, currency: 'INR', type: 'gold' });
-      items.push({ name: 'Gold 22K', symbol: 'XAU22K', price: d.price_gram_22k * 10, unit: '₹/10g', change: (d.ch || 0) * 0.916, changePct: d.chp || 0, currency: 'INR', type: 'gold' });
+    const html = await r.text();
+    const priceMatch = html.match(/data-last-price="([^"]+)"/);
+    const changeMatch = html.match(/data-last-normal-market-change-percent="([^"]+)"/);
+    if (priceMatch) {
+      const goldOzUSD = parseFloat(priceMatch[1]);
+      const goldGramINR = (goldOzUSD / 31.1035) * inrRate;
+      const chPct = parseFloat(changeMatch?.[1]) * 100 || 0;
+      items.push({ name: 'Gold 24K', symbol: 'XAU24K', price: goldGramINR * 10, unit: '₹/10g', change: 0, changePct: chPct, currency: 'INR', type: 'gold' });
+      items.push({ name: 'Gold 22K', symbol: 'XAU22K', price: goldGramINR * 10 * 0.9166, unit: '₹/10g', change: 0, changePct: chPct, currency: 'INR', type: 'gold' });
     }
-  } catch (e) { console.error(`[COMMODITIES] GoldAPI: ${e.message}`); }
+    console.log('[COMMODITIES] Google Finance gold: OK');
+  } catch (e) { console.error(`[COMMODITIES] Google gold: ${e.message}`); }
 
-  // Fallback: calculate from USD gold price
-  if (items.length === 0) {
-    try {
-      const r = await safeFetch('https://api.metalpriceapi.com/v1/latest?api_key=demo&base=INR&currencies=XAU,XAG', { timeout: 8000 });
-      const d = await r.json();
-      if (d.rates) {
-        if (d.rates.INRXAU) {
-          const perGram24k = (1 / d.rates.INRXAU) / 31.1035;
-          items.push({ name: 'Gold 24K', symbol: 'XAU24K', price: perGram24k * 10, unit: '₹/10g', change: 0, changePct: 0, currency: 'INR', type: 'gold' });
-          items.push({ name: 'Gold 22K', symbol: 'XAU22K', price: perGram24k * 10 * 0.916, unit: '₹/10g', change: 0, changePct: 0, currency: 'INR', type: 'gold' });
-        }
-        if (d.rates.INRXAG) {
-          const silverPerGram = (1 / d.rates.INRXAG) / 31.1035;
-          items.push({ name: 'Silver', symbol: 'XAG', price: silverPerGram * 10, unit: '₹/10g', change: 0, changePct: 0, currency: 'INR', type: 'silver' });
-        }
-      }
-    } catch (e) { /* skip */ }
-  }
-
-  // Silver via GoldAPI
-  if (!items.find(i => i.type === 'silver')) {
-    try {
-      const r = await safeFetch('https://www.goldapi.io/api/XAG/INR', {
-        headers: { 'x-access-token': 'goldapi-demo', 'Content-Type': 'application/json' }, timeout: 10000
-      });
-      const d = await r.json();
-      if (d.price_gram_24k) {
-        items.push({ name: 'Silver', symbol: 'XAG', price: d.price_gram_24k * 10, unit: '₹/10g', change: d.ch || 0, changePct: d.chp || 0, currency: 'INR', type: 'silver' });
-      }
-    } catch (e) { /* skip */ }
-  }
-
-  // Crude Oil from exchange rate conversion
+  // Source 2: Google Finance for silver
   try {
-    const [oilR, fxR] = await Promise.all([
-      safeFetch('https://api.coingecko.com/api/v3/simple/price?ids=crude-oil&vs_currencies=usd', { timeout: 8000 }).catch(() => null),
-      safeFetch('https://open.er-api.com/v6/latest/USD', { timeout: 8000 })
-    ]);
-    const fx = await fxR.json();
-    const inrRate = fx.rates?.INR || 86;
-    
-    // Use a simple commodity proxy — crude oil approx price
-    // Since free crude API is limited, we store last known
-    items.push({ name: 'Crude Oil (Brent)', symbol: 'BRENT', price: 70 * inrRate, unit: '₹/barrel', change: 0, changePct: 0, currency: 'INR', type: 'crude' });
+    const r = await safeFetch('https://www.google.com/finance/quote/XAG-USD', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, timeout: 8000
+    });
+    const html = await r.text();
+    const priceMatch = html.match(/data-last-price="([^"]+)"/);
+    const changeMatch = html.match(/data-last-normal-market-change-percent="([^"]+)"/);
+    if (priceMatch) {
+      const silverOzUSD = parseFloat(priceMatch[1]);
+      const silverGramINR = (silverOzUSD / 31.1035) * inrRate;
+      const chPct = parseFloat(changeMatch?.[1]) * 100 || 0;
+      items.push({ name: 'Silver', symbol: 'XAG', price: silverGramINR * 10, unit: '₹/10g', change: 0, changePct: chPct, currency: 'INR', type: 'silver' });
+    }
+    console.log('[COMMODITIES] Google Finance silver: OK');
+  } catch (e) { console.error(`[COMMODITIES] Google silver: ${e.message}`); }
+
+  // Source 3: Crude Oil from Google Finance
+  try {
+    const r = await safeFetch('https://www.google.com/finance/quote/CL=F', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, timeout: 8000
+    });
+    const html = await r.text();
+    const priceMatch = html.match(/data-last-price="([^"]+)"/);
+    const changeMatch = html.match(/data-last-normal-market-change-percent="([^"]+)"/);
+    if (priceMatch) {
+      const crudeUSD = parseFloat(priceMatch[1]);
+      const chPct = parseFloat(changeMatch?.[1]) * 100 || 0;
+      items.push({ name: 'Crude Oil (WTI)', symbol: 'CL', price: crudeUSD, unit: '$/barrel', change: 0, changePct: chPct, currency: 'USD', type: 'commodity' });
+      items.push({ name: 'Crude Oil (INR)', symbol: 'CL-INR', price: crudeUSD * inrRate, unit: '₹/barrel', change: 0, changePct: chPct, currency: 'INR', type: 'commodity' });
+    }
+    console.log('[COMMODITIES] Google Finance crude: OK');
+  } catch (e) { console.error(`[COMMODITIES] Google crude: ${e.message}`); }
+
+  // Natural Gas
+  try {
+    const r = await safeFetch('https://www.google.com/finance/quote/NG=F', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, timeout: 8000
+    });
+    const html = await r.text();
+    const priceMatch = html.match(/data-last-price="([^"]+)"/);
+    if (priceMatch) {
+      items.push({ name: 'Natural Gas', symbol: 'NG', price: parseFloat(priceMatch[1]), unit: '$/MMBtu', change: 0, changePct: 0, currency: 'USD', type: 'commodity' });
+    }
   } catch (e) { /* skip */ }
 
-  // Store price history for charts (append to rolling array)
+  // Store price history for charts
   const history = cache.get('commodity_history') || [];
   if (items.length > 0) {
     history.push({ ts: Date.now(), items: items.map(i => ({ name: i.name, price: i.price })) });
-    // Keep last 48 data points (24 hours at 30min intervals)
     if (history.length > 48) history.shift();
     cache.set('commodity_history', history);
   }
