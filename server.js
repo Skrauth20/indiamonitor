@@ -541,11 +541,6 @@ const REGIONAL_FEEDS = {
     { name: 'India.com Tamil', url: 'https://www.india.com/tamil/feed/' },
     { name: 'Puthiya Thalaimurai', url: 'https://www.puthiyathalaimurai.com/feed' },
   ],
-  kannada: [
-    { name: 'TV9 Kannada', url: 'https://www.tv9kannada.com/feed' },
-    { name: 'India.com Kannada', url: 'https://www.india.com/kannada/feed/' },
-    { name: 'Prajavani', url: 'https://www.prajavani.net/feed' },
-  ],
   gujarati: [
     { name: 'BBC Gujarati', url: 'https://feeds.bbci.co.uk/gujarati/rss.xml' },
     { name: 'TV9 Gujarati', url: 'https://www.tv9gujarati.com/feed' },
