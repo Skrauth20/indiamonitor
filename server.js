@@ -535,6 +535,37 @@ const REGIONAL_FEEDS = {
     { name: 'Dainik Statesman', url: 'https://www.dailystatesman.com/feed/' },
     { name: 'Bangla News 24', url: 'https://banglanews24.com/rss/rss.xml' },
   ],
+  tamil: [
+    { name: 'BBC Tamil', url: 'https://feeds.bbci.co.uk/tamil/rss.xml' },
+    { name: 'TV9 Tamil', url: 'https://www.tv9tamil.com/feed' },
+    { name: 'India.com Tamil', url: 'https://www.india.com/tamil/feed/' },
+    { name: 'Puthiya Thalaimurai', url: 'https://www.puthiyathalaimurai.com/feed' },
+  ],
+  kannada: [
+    { name: 'TV9 Kannada', url: 'https://www.tv9kannada.com/feed' },
+    { name: 'India.com Kannada', url: 'https://www.india.com/kannada/feed/' },
+    { name: 'Prajavani', url: 'https://www.prajavani.net/feed' },
+  ],
+  gujarati: [
+    { name: 'BBC Gujarati', url: 'https://feeds.bbci.co.uk/gujarati/rss.xml' },
+    { name: 'TV9 Gujarati', url: 'https://www.tv9gujarati.com/feed' },
+    { name: 'India.com Gujarati', url: 'https://www.india.com/gujarati/feed/' },
+  ],
+  punjabi: [
+    { name: 'BBC Punjabi', url: 'https://feeds.bbci.co.uk/punjabi/rss.xml' },
+    { name: 'Ajit Jalandhar', url: 'https://www.ajitjalandhar.com/feed/' },
+    { name: 'Rozana Spokesman', url: 'https://www.rozanaspokesman.com/feed/' },
+  ],
+  urdu: [
+    { name: 'BBC Urdu', url: 'https://feeds.bbci.co.uk/urdu/rss.xml' },
+    { name: 'Siasat Urdu', url: 'https://www.siasat.com/feed/' },
+    { name: 'Inquilab', url: 'https://www.inquilab.com/feed/' },
+  ],
+  nepali: [
+    { name: 'BBC Nepali', url: 'https://feeds.bbci.co.uk/nepali/rss.xml' },
+    { name: 'Setopati', url: 'https://www.setopati.com/feed' },
+    { name: 'Online Khabar', url: 'https://www.onlinekhabar.com/feed' },
+  ],
 };
 
 function regionalSeverity(title) {
@@ -818,23 +849,13 @@ app.get('/api/all', async (req, res) => {
 });
 
 // Phase 2 routes
-app.get('/api/news/hindi', async (req, res) => {
+// Regional news — dynamic route for all languages
+const SUPPORTED_LANGS = Object.keys(REGIONAL_FEEDS);
+app.get('/api/news/:lang', async (req, res) => {
+  const lang = req.params.lang;
+  if (!SUPPORTED_LANGS.includes(lang)) return res.status(404).json({ success: false, error: `Language '${lang}' not supported. Available: ${SUPPORTED_LANGS.join(', ')}` });
   try {
-    let d = cache.get('news_hindi'); if (!d) d = await fetchRegionalNews('hindi');
-    res.json({ success: true, count: d.length, data: d });
-  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-
-app.get('/api/news/marathi', async (req, res) => {
-  try {
-    let d = cache.get('news_marathi'); if (!d) d = await fetchRegionalNews('marathi');
-    res.json({ success: true, count: d.length, data: d });
-  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-
-app.get('/api/news/bangla', async (req, res) => {
-  try {
-    let d = cache.get('news_bangla'); if (!d) d = await fetchRegionalNews('bangla');
+    let d = cache.get(`news_${lang}`); if (!d) d = await fetchRegionalNews(lang);
     res.json({ success: true, count: d.length, data: d });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
@@ -868,7 +889,7 @@ cron.schedule('*/10 * * * *', () => fetchQuakes().catch(console.error));
 cron.schedule('*/30 * * * *', () => fetchWeather().catch(console.error));
 cron.schedule('*/30 * * * *', () => fetchAQI().catch(console.error));
 cron.schedule('*/2 * * * *', () => fetchAllSports().catch(console.error)); // Sports: every 2 min (live scores need frequent updates)
-cron.schedule('*/5 * * * *', () => Promise.allSettled([fetchRegionalNews('hindi'),fetchRegionalNews('marathi'),fetchRegionalNews('bangla')]).catch(console.error)); // Regional news: 5 min
+cron.schedule('*/5 * * * *', () => Promise.allSettled(Object.keys(REGIONAL_FEEDS).map(l => fetchRegionalNews(l))).catch(console.error)); // Regional news: 5 min
 cron.schedule('*/15 * * * *', () => fetchCyber().catch(console.error));    // Cyber: 15 min
 cron.schedule('*/10 * * * *', () => fetchDefence().catch(console.error));   // Defence: 10 min
 
@@ -878,7 +899,7 @@ cron.schedule('*/10 * * * *', () => fetchDefence().catch(console.error));   // D
 async function boot() {
   console.log('🇮🇳 INDIA MONITOR v2.0 — Starting...');
   // Phase 1: Fast fetchers (no rate limit issues)
-  await Promise.allSettled([fetchAllNews(), fetchQuakes(), fetchAllSports(), fetchRegionalNews('hindi'), fetchRegionalNews('marathi'), fetchRegionalNews('bangla'), fetchDefence()]);
+  await Promise.allSettled([fetchAllNews(), fetchQuakes(), fetchAllSports(), ...Object.keys(REGIONAL_FEEDS).map(l => fetchRegionalNews(l)), fetchDefence()]);
   console.log('✅ Phase 1 loaded (news, quakes, sports, regional, defence)');
   // Phase 2: Rate-limited APIs (weather, AQI, markets, cyber) — stagger
   await Promise.allSettled([fetchMarkets(), fetchCyber()]);
